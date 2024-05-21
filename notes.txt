@@ -1,0 +1,9 @@
+snowflake
+    account identifier: dbdwaxn-ha28961
+
+
+
+further improvements:
+- use tables on some models instead of views. it wont scale if it is a view
+- use indexes
+- reduce the columns as needed from the staging tables (not sure about this)
