@@ -500,3 +500,13 @@ The lineage of the model:
 The data on Snowflake:
 ![Image](img/snowflake_avg_trans_time_per_store.png)
 
+
+
+## **FURTHER IMPROVEMENTS**
+- use tables on some models instead of views. it wont scale if it is a view and number of rows go up to millions
+- use indexes on columns frequently referred to on the queries, especially on filters
+- reduce the columns as needed from the staging tables
+- add tests!
+
+
+#### *note: I apologize if I weren't able to add tests, I would have to read more on them to use them to their best potential. I can't work on them anymore tomorrow (deadline, May 22) as I will be reporting on site for work.*
