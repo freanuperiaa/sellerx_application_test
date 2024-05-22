@@ -400,7 +400,6 @@ The code for the fifth model ([avg_trans_time_per_store.sql](https://github.com/
     )
 }}
 
-
 WITH transactions AS (
     SELECT * FROM {{ ref('stg_staging__transaction') }}
 ),
@@ -410,95 +409,81 @@ devices AS (
 ),
 
 
-ranked_transactions_device AS (
+transactions_with_device AS (
+
+    -- we need to know how long it takes on average for a store to make five transactions.
     SELECT
-        A.id AS transaction_id
-        ,A.device_id AS device_id
-        ,B.store_id AS store_id
-        ,A.happened_at 
+        A.id
+        ,A.device_id
+        ,B.store_id
+        ,A.happened_at
         ,ROW_NUMBER() OVER(PARTITION BY B.store_id ORDER BY A.happened_at) AS row_num
 
-    FROM
-        transactions A LEFT JOIN devices B
-            ON A.device_id = B.id
-
-    ORDER BY row_num
+    FROM transactions A LEFT JOIN devices B
+        ON A.device_id = B.id
 ),
 
-ranked_transactions_device_next_trans AS (
-    SELECT 
-        A.transaction_id
-        ,A.device_id
-        ,A.store_id
-        ,A.happened_at
-        ,B.happened_at AS next_trans_happened_at
-        ,A.row_num
-
-    FROM
-        ranked_transactions_device A LEFT JOIN ranked_transactions_device B
-            ON A.store_id = B.store_id
-            AND (A.row_num + 1) = B.row_num
-
-),
-
-top_trans_duration_rank AS (
-    SELECT 
-        transaction_id
-        ,device_id
-        ,store_id
+per_store_first_five_trans AS (
+    SELECT
+        store_id
         ,happened_at
-        ,next_trans_happened_at
-        ,DATEDIFF(day, happened_at, next_trans_happened_at) AS trans_duration
         ,row_num
     
     FROM 
-        ranked_transactions_device_next_trans
+        transactions_with_device
+    
+    WHERE row_num <= 5
+),
 
-    WHERE
-        row_num <= 5
-        AND trans_duration IS NOT NULL
-        -- NULL trans_duration will be caused by transactions with no next_trans_happened_at. let's not account for it since there's no other better way to *count* the duration of a transaction
+per_store_to_first_five_trans AS (
+    SELECT    
+        store_id
+        ,MAX(row_num) AS max_row_num
+        ,DATEDIFF(
+            day,
+            MIN(happened_at),
+            MAX(happened_at)
+        ) AS days_to_five_transactions
+
+    FROM
+        per_store_first_five_trans
+    
+    GROUP BY
+        store_id
+    
+    HAVING
+        max_row_num = 5
+    
+
 )
 
-
-
-SELECT
-    store_id
-    ,AVG(trans_duration) AS avg_trans_duration
-    -- weird behavior, won't run if the AVG is not given alias 
-    -- https://stackoverflow.com/questions/56743577/snowflake-sql-compilation-error-missing-column-specification
-    -- https://community.snowflake.com/s/question/0D50Z00008Zg12qSAB/how-do-i-add-currenttimestamp-to-a-view-i-keep-getting-the-error-sql-compilation-error-missing-column-specification
-
-FROM 
-    top_trans_duration_rank
-
-GROUP BY
-    store_id
-
-ORDER BY avg_trans_duration
+SELECT AVG(days_to_five_transactions) AS average_time_to_five_transactions FROM per_store_to_first_five_trans
 
 ```
 
-For this model, I would first take the transactions that we have for every devices. Since it was specified by the problem that it had to be the ** 5 first transactions **, I would also use `ROW_NUMBER()` so that I could get the ranking by the `happened_at` column, partitioned by `store_id`. All this saved in a CTE `ranked_transactions_device`.
+For this model, I'm understanding the need to be:
+*what is the average time for all stores to make their first five transactions only*
 
-Next is, I would join `ranked_transactions_device` on itself, on the columns store_id and the row_number, the left side added by one, so that we can have the `happened_at` of the next transaction of a store.
+im approaching it as
+- take the top 5 most recent transactions a store has
+- take duration between the the first `happened_at` and last(fifth) `happened_at`. *this will be how long it took a store to make 5 transactions*
+- now that we have every store's duration to make five transactions, we can simply take the average of all those values.
 
-The reason why I took the next `happened_at` is because It is what I used to calculate the duration of a transaction. Yes, we have the column `created_at`, but the duration from happened_at and created_at seemed to be too far for me, and it would not make sense that a sales transaction would take that long (others would take around a year!). Taking the `happened_at` of a transaction and the `happened_at` of the next transaction of a store would make more sense if we would want to know it's duration.
+On the first CTE, I just took the devices and stores a particular transaction has, joining it to the devices table. Then, on the SELECT statement, I created a rank to show a rows order on the `happened_at` column, from the earliest to the latest.
 
+On the second CTE, I filtered the result I got previously, `where row_num <= 5`. What this does is that *it limits the transactions that we have per store to only the first and fifth transaction.*
 
-In the image below, we can see with the red lines that happened_at and created_at is too far off. it's nearer to it's next transaction, which is of the same store and next rank (signified by the blue lines)
-![Image](img/created_at_happened_at.png)
+On the third CTE, I grouped those values I had from the second CTE by the store, and subtracted the first (min) and last (max) `happened_at` so that we can know how long it took for a particular store to get five transactions. 
 
+I also had to put out in the `max_row_num` in `SELECT` so that I can use it in the `HAVING` clause. This will make sure that all stores have five transactions.
 
-Now that we have the time of the following transaction, it's time to calculate for the difference. in the CTE `top_trans_duration_rank`, I took the difference (in days) by using `DATEDIFF()`. I also filtered the rows where the row_num should be 5 up, and the trans_duration is not null. NULL `trans_duration`s happens when a particular transaction of a store has no following transaction. Since we have no reference on the duration of the transaction, we're better off with not considering them.
-
-Finally, we took the `store_id` and took the average of `trans_duration` for that store, grouping them by the `store_id`
+Now that we have the duration to take the first five transactions for each store, I took the average of them all.
 
 The lineage of the model:
 ![Image](img/model_avg_trans_time_per_store.png)
 
 The data on Snowflake:
-![Image](img/snowflake_avg_trans_time_per_store.png)
+![Image](img/snowflake_avg_trans_time_per_store_2.png)
 
 
 
